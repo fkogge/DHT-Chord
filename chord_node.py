@@ -4,6 +4,7 @@ BUF_SZ = 4096  # socket recv arg
 BACKLOG = 100  # socket listen arg
 TEST_BASE = 43544  # for testing use port numbers on localhost at TEST_BASE+n
 
+import sys
 
 class ModRange(object):
     """
@@ -141,7 +142,10 @@ class ChordNode(object):
         return self.call_rpc(np, 'successor')
 
 def main():
-    pass
+    if len(sys.argv) != 2:
+        print('Usage: chord_node.py NODE_PORT_NUMBER (enter 0 if '
+              'starting new network)')
+        exit(1)
 
 if __name__ == '__main__':
     main()
