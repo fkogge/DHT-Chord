@@ -1,10 +1,14 @@
+import socket
+import threading
+import sys
+import pickle
+
 M = 3  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
 NODES = 2 ** M
 BUF_SZ = 4096  # socket recv arg
 BACKLOG = 100  # socket listen arg
 TEST_BASE = 43544  # for testing use port numbers on localhost at TEST_BASE+n
 
-import sys
 
 class ModRange(object):
     """
@@ -128,6 +132,23 @@ class ChordNode(object):
         self.predecessor = None
         self.keys = {}
 
+        self.listener, self.listener_address = self.start_listening_server()
+
+    def run(self):
+        while True:
+            client_sock, client_address = self.listener.accept()
+            threading.Thread(target=self.handle_rpc,
+                             args=(client_address,)).start()
+
+    def handle_rpc(self, client_sock):  # TODO figure what this is doing
+        rpc = client_sock.recv(BUF_SZ)
+        method, arg1, arg2 = pickle.loads(rpc)
+        result = self.dispatch_rpc(method, arg1, arg2)
+        client_sock.sendall(pickle.dumps(result))
+
+    def dispatch_rpc(self, method, arg1, arg2): # TODO figure what these args are
+        pass
+
     @property
     def successor(self):
         return self.finger[1].node
@@ -141,11 +162,28 @@ class ChordNode(object):
         np = self.find_predecessor(id)
         return self.call_rpc(np, 'successor')
 
+    @staticmethod
+    def start_listening_server():
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(('localhost', 0))
+        listener.listen(BACKLOG)
+        return listener, listener.getsockname()
+
+
 def main():
     if len(sys.argv) != 2:
         print('Usage: chord_node.py NODE_PORT_NUMBER (enter 0 if '
               'starting new network)')
         exit(1)
+
+    node_port = sys.argv[1]
+    if node_port == 0:
+        node = ChordNode()
+        node.run()
+
+
+
+
 
 if __name__ == '__main__':
     main()
