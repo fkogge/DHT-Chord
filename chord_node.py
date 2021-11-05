@@ -3,7 +3,8 @@ import threading
 import sys
 import pickle
 import hashlib
-import datetime
+from datetime import datetime
+from enum import Enum
 
 M = 3  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
 NODES = 2 ** M
@@ -128,6 +129,14 @@ class FingerEntry(object):
         return id in self.interval
 
 
+class RPC(Enum):
+    FIND_SUCCESSOR = 'find_successor'
+    FIND_PREDECESSOR = 'find_predecessor'
+    CLOSEST_PRECEDING_FINGER = 'closest_preceding_finger'
+    SUCCESSOR = 'successor'
+    UPDATE_FINGER_TABLE = 'update_finger_table'
+
+
 class ChordNode(object):
     def __init__(self, n):
         self.node = n
@@ -137,14 +146,16 @@ class ChordNode(object):
 
         self.listener_address = ('localhost', TEST_BASE + n)
         self.listener = self.start_listening_server()
-        print('I joined!')
+        print('Node ID = {} joined on {} at [{}]'
+              .format(self.node, self.listener_address,
+                      self.print_time(datetime.now())))
 
     def run_server(self):
         while True:
             print('running forever')
             client_sock, client_address = self.listener.accept()
             threading.Thread(target=self.handle_rpc,
-                             args=(client_address,)).start()
+                             args=(client_sock,)).start()
 
     def handle_rpc(self, client_sock):  # TODO figure what this is doing
         rpc = client_sock.recv(BUF_SZ)
@@ -152,8 +163,18 @@ class ChordNode(object):
         result = self.dispatch_rpc(method, arg1, arg2)
         client_sock.sendall(pickle.dumps(result))
 
-    def dispatch_rpc(self, method, arg1, arg2): # TODO figure what these args are
-        pass
+    def dispatch_rpc(self, method, arg1=None, arg2=None): # TODO figure what these args are
+        if method == RPC.FIND_SUCCESSOR.value:
+            return self.find_successor(arg1)
+        elif method == RPC.SUCCESSOR.value:
+            if arg1:
+                return self.successor(arg1)
+            else:
+                return self.successor
+        elif method == RPC.CLOSEST_PRECEDING_FINGER.value:
+            return self.closest_preceding_finger(arg1)
+        elif method == RPC.UPDATE_FINGER_TABLE.value:
+            return self.update_finger_table(arg1, arg2)
 
     @property
     def successor(self):
@@ -165,8 +186,22 @@ class ChordNode(object):
 
     def find_successor(self, id):
         """ Ask this node to find id's successor = successor(predecessor(id))"""
-        np = self.find_predecessor(id)
-        return self.call_rpc(np, 'successor')
+        print('WOO RPC call succeeded')
+        n_prime = self.find_predecessor(id)
+        return self.call_rpc(n_prime, RPC.SUCCESSOR.value)
+
+    def find_predecessor(self, id):
+        n_prime = self.node
+        while id not in ModRange(n_prime + 1, self.call_rpc(n_prime, RPC.SUCCESSOR.value), NODES):
+            n_prime = self.call_rpc(n_prime,
+                                    RPC.CLOSEST_PRECEDING_FINGER.value, id)
+        return n_prime
+
+    def closest_preceding_finger(self, id):
+        for i in range(M, 0, -1):
+            if self.finger[i].node in range(self.node, id):
+                return self.finger[i].node
+        return self.node
 
     def start_listening_server(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -174,11 +209,23 @@ class ChordNode(object):
         listener.listen(BACKLOG)
         return listener
 
-    def find_predecessor(self, id):
-        pass
 
-    def call_rpc(self, method_name, n_prime, param):
-        pass
+
+    def call_rpc(self, n_prime, method_name, arg1=None, arg2=None):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as n_prime_sock:
+            try:
+                n_prime_address = (POSSIBLE_HOSTS[0], TEST_BASE + n_prime)
+                n_prime_sock.connect(n_prime_address)
+
+            except Exception as e:
+                print('Failed to connect to Node ID = {}, RPC aborted at [{}]'
+                      .format(n_prime, self.print_time(datetime.now())))
+                return None
+
+            else:
+                marshalled_data = pickle.dumps((method_name, arg1, arg2))
+                n_prime_sock.sendall(marshalled_data)
+                return pickle.loads(n_prime_sock.recv(BUF_SZ))
 
     def join(self, n_prime=None):
         if n_prime:
@@ -186,8 +233,22 @@ class ChordNode(object):
             self.update_others()
         else:
             for i in range(1, M + 1):
-                self.finger[i].node = self
-            self.predecessor = self
+                self.finger[i].node = self.node
+            self.predecessor = self.node
+
+    def init_finger_table(self, n_prime):
+        self.finger[1].node = self.call_rpc(n_prime, RPC.FIND_SUCCESSOR.value,
+                                            self.finger[1].start)
+        #self.predecessor = self.successor.predecessor TODO this part be confusing. DO we use RPC calls?
+        self.predecessor = self.call_rpc(self.successor, RPC.FIND_PREDECESSOR.value, self.successor)
+        self.successor.predecessor = self.node
+        for i in range(M - 1):
+            if self.finger[i + 1].start in range(self.node, self.finger[i].node):
+                self.finger[i + 1].node = self.finger[i].node
+            else:
+                self.finger[i + 1].node = \
+                    self.call_rpc(n_prime, RPC.FIND_SUCCESSOR.value, self.finger[i + 1].start)
+
 
     def update_others(self):
         """ Update all other node that should have this node in their finger tables """
@@ -249,20 +310,20 @@ def main():
     if node_port == 0:
         # Create new Chord node
         # Start a new network with ID = 0
-        new_node = ChordNode(node_port)
+        new_node = ChordNode(1)
         new_node.join()
 
     else:
         # Lookup node ID from the known Chord node port passed in
 
         # Hash the address of the KNOWN node port
-        address_hash = hashlib.sha1(pickle.dumps((POSSIBLE_HOSTS, node_port)))
+        #address_hash = hashlib.sha1(pickle.dumps((POSSIBLE_HOSTS[0], node_port)))
         # Get node ID of the KNOWN node
-        node_id = Chord.lookup_node(address_hash)
+        node_id = Chord.lookup_node((POSSIBLE_HOSTS[0], node_port))
         # Create a NEW node TODO how to figure out the next ID value to add?
-        new_node = ChordNode(1)
+        new_node = ChordNode(2)
         # Join the NEW node to the existing network using the KNOWN node ID
-        new_node.join(node_id)
+        new_node.join(1)
 
     new_node.run_server()
 
