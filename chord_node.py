@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 from random import randrange
 
-M = 3  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
+M = 4  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
 NODES = 2 ** M
 BUF_SZ = 8192  # socket recv arg
 BACKLOG = 100  # socket listen arg
@@ -152,7 +152,7 @@ class ChordNode(object):
         self.predecessor = None
         self.keys = {}
 
-        self.listener_address = ('localhost', Chord.get_empty_port(self.node))
+        self.listener_address = (DEFAULT_HOST, Chord.get_empty_port(self.node))
         self.listener = self.start_listening_server()
         print('Node ID = {} joined on {} at [{}]'
               .format(self.node, self.listener_address, Chord.print_time()))
@@ -200,7 +200,7 @@ class ChordNode(object):
             return self.get_predecessor()
 
         elif method == RPC.ADD_KEY.value:
-            self.add_key(arg1)
+            return self.add_key(arg1)
 
         return 'no return value'
 
@@ -334,15 +334,18 @@ class ChordNode(object):
         return '\n'.join(str(self.finger[k]) for k in range(1, M + 1))
 
     def add_key(self, key):
-        if key in ModRange(self.predecessor + 1, self.node, NODES):
+        if key in ModRange(self.predecessor + 1, self.node + 1, NODES):
             self.keys[key] = True
-            print('Added key {}'.format(key))
             print(self.keys)
+            return 'Node {} added key {}'.format(self.node, key)
 
         else:
             # Find key successor
             n_prime = self.find_successor(key)
             self.call_rpc(n_prime, RPC.ADD_KEY, key)
+
+    def get_key_data(self, key):
+        return self.keys[key]
 
 
 class Chord(object):
@@ -350,13 +353,62 @@ class Chord(object):
     node_map = {}  # Key: node, Value: list of ports
 
     @staticmethod
-    def populate(address: tuple[str, int], keys: list):
-        node = Chord.lookup_node(address)
-        for key in keys:
+    def contact_node(address: tuple[str, int], method: RPC, key_list=None, single_key=None):
+        if method == RPC.ADD_KEY:
+            method = RPC.ADD_KEY.value
+        elif method == RPC.GET_KEY_DATA:
+            method = RPC.GET_KEY_DATA.value
+        else:
+            raise ValueError('Wrong method type.')
+
+        data = []
+
+        if single_key:
+            key_list = [single_key]
+
+        for key in key_list:
             marshalled_key = pickle.dumps(key)
             marshalled_hash = hashlib.sha1(marshalled_key).digest()
-            key_id = int.from_bytes(marshalled_hash, byteorder='big')
+            key_id = int.from_bytes(marshalled_hash, byteorder='big') % NODES
 
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.connect(address)
+                marshalled_data = pickle.dumps((method, key_id, None))
+                sock.sendall(marshalled_data)
+                data.append(pickle.loads(sock.recv(BUF_SZ)))
+
+        return data
+
+
+    @staticmethod
+    def populate(address: tuple[str, int], keys: list):
+        return Chord.contact_node(address, RPC.ADD_KEY, key_list=keys)
+        #
+        # node = Chord.lookup_node(address)
+        #
+        # for key in keys:
+        #     marshalled_key = pickle.dumps(key)
+        #     marshalled_hash = hashlib.sha1(marshalled_key).digest()
+        #     key_id = int.from_bytes(marshalled_hash, byteorder='big') % NODES
+        #
+        #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        #         sock.connect(address)
+        #         marshalled_data = pickle.dumps((RPC.ADD_KEY.value, key_id, None))
+        #         sock.sendall(marshalled_data)
+        #         print(pickle.loads(sock.recv(BUF_SZ)))
+
+    @staticmethod
+    def lookup_key(address: tuple[str, int], key: str):
+        return Chord.contact_node(address, RPC.GET_KEY_DATA, single_key=key)
+        # marshalled_key = pickle.dumps(key)
+        # marshalled_hash = hashlib.sha1(marshalled_key).digest()
+        # key_id = int.from_bytes(marshalled_hash, byteorder='big') % NODES
+        #
+        # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        #     sock.connect(address)
+        #     marshalled_data = pickle.dumps((RPC.GET_KEY_DATA.value, key_id, None))
+        #     sock.sendall(marshalled_data)
+        #     return pickle.loads(sock.recv(BUF_SZ))
 
 
 
@@ -461,12 +513,14 @@ def main():
     if node_port == 0:
         # Get any random m-bit ID
         node = randrange(0, NODES)
+        #join()
 
     else:
         known_node_id = Chord.lookup_node(('localhost', node_port))
         node = known_node_id
         while node == known_node_id:
             node = randrange(0, NODES)
+        #join(known_node_id)
 
     new_node = ChordNode(node)
     new_node.join(known_node_id)
