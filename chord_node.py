@@ -126,7 +126,7 @@ class FingerEntry(object):
 
     def __repr__(self):
         """ Something like the interval|node charts in the paper """
-        return '{} | [{}, {}) | {}'.format(self.start, self.start,
+        return '{:<2} | [{:<2}, {:<2}) | {}'.format(self.start, self.start,
                                            self.next_start, self.node)
 
     def __contains__(self, id):
@@ -135,6 +135,10 @@ class FingerEntry(object):
 
 
 class RPC(Enum):
+    """
+    Remote procedure call (RPC) enum class for organizing names of methods that
+    can be invoked on other nodes in the network via an RPC call.
+    """
     FIND_SUCCESSOR = 'find_successor'
     FIND_PREDECESSOR = 'find_predecessor'
     CLOSEST_PRECEDING_FINGER = 'closest_preceding_finger'
@@ -143,6 +147,7 @@ class RPC(Enum):
     SET_PREDECESSOR = 'set_predecessor'
     GET_PREDECESSOR = 'get_predecessor'
     ADD_KEY = 'add_key'
+    GET_DATA = 'get_data'
 
 
 class ChordNode(object):
@@ -158,14 +163,15 @@ class ChordNode(object):
               .format(self.node, self.listener_address, Chord.print_time()))
 
     def init_key_map(self):
-        self.keys = {key: False for key in ModRange(self.predecessor + 1, self.node + 1, NODES)}
+        pass
+        #self.keys = {key: None for key in ModRange(self.predecessor + 1, self.node + 1, NODES)}
 
     def update_key_map(self):
         self.keys = {key: self.keys[key] for key in ModRange(self.predecessor + 1, self.node + 1, NODES)}
 
     def run_server(self):
         while True:
-            #self.print_finger_table()
+            print(self.print_neighbors())
             print('\nWaiting for incoming connection...\n')
             client_sock, client_address = self.listener.accept()
             threading.Thread(target=self.handle_rpc, args=(client_sock,)).start()
@@ -173,7 +179,7 @@ class ChordNode(object):
     def handle_rpc(self, client_sock):
         rpc = client_sock.recv(BUF_SZ)
         method, arg1, arg2 = pickle.loads(rpc)
-        print('Received RPC request \"{}\"'.format(method))
+        print('Received RPC request: \"{}\"'.format(method))
         result = self.dispatch_rpc(method, arg1, arg2)
         client_sock.sendall(pickle.dumps(result))
 
@@ -192,6 +198,7 @@ class ChordNode(object):
 
         elif method == RPC.UPDATE_FINGER_TABLE.value:
             print(self.update_finger_table(arg1, arg2))
+            self.update_keys()
 
         elif method == RPC.SET_PREDECESSOR.value:
             self.set_predecessor(arg1)
@@ -200,9 +207,28 @@ class ChordNode(object):
             return self.get_predecessor()
 
         elif method == RPC.ADD_KEY.value:
-            return self.add_key(arg1)
+            return self.add_key(arg1, arg2)
+
+        elif method == RPC.GET_DATA.value:
+            return self.get_data(arg1)
 
         return 'no return value'
+
+    def update_keys(self, new_key=None, new_data=None):
+        if new_key and new_data:
+            self.keys[new_key] = new_data
+            return
+
+        remove_list = []
+        for key, data in self.keys.items():
+            if key not in ModRange(self.predecessor + 1, self.successor + 1, NODES):
+                remove_list.append(key)
+                n_prime = self.find_successor(key)
+                self.call_rpc(n_prime, RPC.UPDATE_KEYS, key, data)
+
+        for key in remove_list:
+            del self.keys[key]
+
 
     def call_rpc(self, n_prime, method: RPC, arg1=None, arg2=None):
         method_name = method.value
@@ -263,12 +289,15 @@ class ChordNode(object):
             for i in range(1, M + 1):
                 self.finger[i].node = self.node
             self.predecessor = self.node
-        self.init_key_map()
+        #self.init_key_map()
         print('Joined network at [{}]'.format(Chord.print_time()))
         print(self.print_finger_table())
 
+
+
     def init_finger_table(self, n_prime):
-        self.finger[1].node = self.call_rpc(n_prime, RPC.FIND_SUCCESSOR, self.finger[1].start)
+        self.finger[1].node = self.call_rpc(n_prime, RPC.FIND_SUCCESSOR,
+                                            self.finger[1].start)
 
         # Pseudocode: predecessor = successor.predecessor;
         self.predecessor = self.call_rpc(self.successor, RPC.GET_PREDECESSOR)
@@ -288,9 +317,12 @@ class ChordNode(object):
               .format(Chord.print_time()))
 
     def update_others(self):
-        """ Update all other node that should have this node in their finger tables """
-        # print('update_others()')
-        for i in range(1, M + 1):  # find last node p whose i-th finger might be this node
+        """
+        Update all other node that should have this node in their
+        finger tables
+        """
+        # find last node p whose i-th finger might be this node
+        for i in range(1, M + 1):
             # FIXME: bug in paper, have to add the 1 +
             p = self.find_predecessor((1 + self.node - 2 ** (i - 1) + NODES) % NODES)
             self.call_rpc(p, RPC.UPDATE_FINGER_TABLE, self.node, i)
@@ -298,9 +330,10 @@ class ChordNode(object):
     def update_finger_table(self, s, i):
         """ if s is i-th finger of n, update this node's finger table with s """
         # FIXME: don't want e.g. [1, 1) which is the whole circle
+        # FIXME: bug in paper, [.start
         if (self.finger[i].start != self.finger[i].node
                 and s in ModRange(self.finger[i].start,
-                                  self.finger[i].node, NODES)):  # FIXME: bug in paper, [.start
+                                  self.finger[i].node, NODES)):
             print('update_finger_table({},{}): {}[{}] = {} since {} in [{},{})'
                   .format(s, i, self.node, i, s, s, self.finger[i].start,
                           self.finger[i].node))
@@ -308,13 +341,13 @@ class ChordNode(object):
             print('#', self)
             p = self.predecessor  # get first node preceding myself
             self.call_rpc(p, RPC.UPDATE_FINGER_TABLE, s, i)
-            self.update_key_map()
-            print(self.keys)
+            #self.update_key_map()
+            #print(self.keys)
             print(self.print_finger_table())
             return str(self)
         else:
-            self.update_key_map()
-            print(self.keys)
+            #self.update_key_map()
+            #print(self.keys)
             print(self.print_finger_table())
             return 'did nothing {}'.format(self)
 
@@ -328,89 +361,114 @@ class ChordNode(object):
         return listener
 
     def print_finger_table(self):
-        # print('Node {} FT:'.format(self.node))
-        # for i in range(1, M + 1):
-        #     print('\t', self.finger[i])
-        return '\n'.join(str(self.finger[k]) for k in range(1, M + 1))
+        """Prints the finger table contents."""
+        return '\n'.join(str(row) for row in self.finger[1:])
 
-    def add_key(self, key):
+    def add_key(self, key, data):
+        """
+        Adds the data to the key map. Recursively finds successor of the key
+        through RPC calls. The data maps to an M-bit key, defined by the
+        identifier space, so no key ID shall be >= NODES.
+        :param key:
+        :param data:
+        :return:
+        """
+        if key >= NODES:
+            raise ValueError('Error: maximum ID allowed is {}'
+                             .format(NODES - 1))
+
         if key in ModRange(self.predecessor + 1, self.node + 1, NODES):
-            self.keys[key] = True
+            self.keys[key] = data
             print(self.keys)
             return 'Node {} added key {}'.format(self.node, key)
-
         else:
             # Find key successor
             n_prime = self.find_successor(key)
-            self.call_rpc(n_prime, RPC.ADD_KEY, key)
+            return self.call_rpc(n_prime, RPC.ADD_KEY, key, data)
 
-    def get_key_data(self, key):
-        return self.keys[key]
+    def get_data(self, key):
+        """
+        Get data associated with the key.
+        :param key: key to lookup
+        :return: data
+        """
+        if key >= NODES:
+            raise ValueError('Error: maximum ID stored is {}'.format(NODES - 1))
 
+        if key in ModRange(self.predecessor + 1, self.node + 1, NODES):
+            return self.keys[key]
+        else:
+            # Find key successor
+            n_prime = self.find_successor(key)
+            return self.call_rpc(n_prime, RPC.GET_DATA, key)
+
+    def print_neighbors(self):
+        return 'predecessor: {}\nsucessor: {}'.format(self.predecessor,
+                                                      self.successor)
 
 class Chord(object):
 
     node_map = {}  # Key: node, Value: list of ports
 
     @staticmethod
-    def contact_node(address: tuple[str, int], method: RPC, key_list=None, single_key=None):
-        if method == RPC.ADD_KEY:
-            method = RPC.ADD_KEY.value
-        elif method == RPC.GET_KEY_DATA:
-            method = RPC.GET_KEY_DATA.value
-        else:
-            raise ValueError('Wrong method type.')
+    def contact_node(address: tuple[str, int], method: RPC, key_map=None,
+                     key=None):
+        """
+        Helper method for either populating data to or retrieving data from the
+        node at the given address in the chord network Chord  network.
+        - If key_map is supplied, an RPC request for ADD_KEY is made: each key
+          gets added to the network
+        - If key is supplied, an RPC request for GET_DATA is made: the data is
+          mapped to the given key is retrieved
 
-        data = []
+        :param address: (host, port) address pair of a node
+        :param method: RPC method to call
+        :param key_map: dictionary of key/data pairs to add
+        :param key: key to retrieve data from
+        :return: list of data retrieved from the chord node
+        """
+        if method != RPC.ADD_KEY and method != RPC.GET_DATA:
+            raise ValueError('Only \'{}\' or \'{}\' RPC requests are permitted.'
+                             .format(RPC.ADD_KEY.value, RPC.GET_DATA.value))
 
-        if single_key:
-            key_list = [single_key]
+        if key:
+            key_map = {key: None}
 
-        for key in key_list:
+        data_retrieved = []
+
+        for key, data in key_map.items():
             marshalled_key = pickle.dumps(key)
             marshalled_hash = hashlib.sha1(marshalled_key).digest()
             key_id = int.from_bytes(marshalled_hash, byteorder='big') % NODES
 
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.connect(address)
-                marshalled_data = pickle.dumps((method, key_id, None))
-                sock.sendall(marshalled_data)
-                data.append(pickle.loads(sock.recv(BUF_SZ)))
+                try:
+                    sock.connect(address)
+                    marshalled_data = pickle.dumps((method.value, key_id, data))
+                    sock.sendall(marshalled_data)
 
-        return data
+                except Exception as e:
+                    print('RPC request \'{}\' failed at {}.'
+                          .format(method.value, Chord.print_time()))
 
+                else:
+                    data_retrieved.append(pickle.loads(sock.recv(BUF_SZ)))
+
+        return data_retrieved
 
     @staticmethod
-    def populate(address: tuple[str, int], keys: list):
-        return Chord.contact_node(address, RPC.ADD_KEY, key_list=keys)
-        #
-        # node = Chord.lookup_node(address)
-        #
-        # for key in keys:
-        #     marshalled_key = pickle.dumps(key)
-        #     marshalled_hash = hashlib.sha1(marshalled_key).digest()
-        #     key_id = int.from_bytes(marshalled_hash, byteorder='big') % NODES
-        #
-        #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        #         sock.connect(address)
-        #         marshalled_data = pickle.dumps((RPC.ADD_KEY.value, key_id, None))
-        #         sock.sendall(marshalled_data)
-        #         print(pickle.loads(sock.recv(BUF_SZ)))
+    def populate(address: tuple[str, int], keys: dict):
+        """
+        Populate
+        :param address:
+        :param keys:
+        :return:
+        """
+        return Chord.contact_node(address, RPC.ADD_KEY, key_map=keys)
 
     @staticmethod
     def lookup_key(address: tuple[str, int], key: str):
-        return Chord.contact_node(address, RPC.GET_KEY_DATA, single_key=key)
-        # marshalled_key = pickle.dumps(key)
-        # marshalled_hash = hashlib.sha1(marshalled_key).digest()
-        # key_id = int.from_bytes(marshalled_hash, byteorder='big') % NODES
-        #
-        # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        #     sock.connect(address)
-        #     marshalled_data = pickle.dumps((RPC.GET_KEY_DATA.value, key_id, None))
-        #     sock.sendall(marshalled_data)
-        #     return pickle.loads(sock.recv(BUF_SZ))
-
-
+        return Chord.contact_node(address, RPC.GET_DATA, key=key)[0]
 
     @staticmethod
     def generate_node_map():
@@ -427,14 +485,9 @@ class Chord(object):
             node = Chord.lookup_node((DEFAULT_HOST, port))
             Chord.node_map[node].append(port)
 
-            # marshalled_address = pickle.dumps((DEFAULT_HOST, port))
-            # marshalled_hash = hashlib.sha1(marshalled_address).digest()
-            # unmarshalled_hash = int.from_bytes(marshalled_hash, byteorder='big')
-            # node = unmarshalled_hash % NODES
-            # Chord.node_map[node].append(port)
-
     @staticmethod
     def lookup_address(node):
+        print(node)
         port_list = Chord.node_map[node]
         for port in port_list:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
