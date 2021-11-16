@@ -368,7 +368,7 @@ class ChordNode(object):
         """
         Adds the data to the key map. Recursively finds successor of the key
         through RPC calls. The data maps to an M-bit key, defined by the
-        identifier space, so no key ID shall be >= NODES.
+        identifier space, so no key ID shall be >= NODES. test
         :param key:
         :param data:
         :return:
