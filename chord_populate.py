@@ -2,6 +2,7 @@ import sys
 import csv
 from chord_node import Chord
 
+
 def get_keys_from_csv(csv_file_name):
     # keys = []
     data = {}
@@ -16,9 +17,8 @@ def get_keys_from_csv(csv_file_name):
             data[row[0] + row[3]] = list(cell for cell in row if cell != '--'
                                          and cell != '')
             i += 1
-            if i == 40:
+            if i == 100:
                 break
-
 
     #return keys
     return data
@@ -37,6 +37,7 @@ def main():
 
     result = Chord.populate(address, data)
     print(result)
+    print('Thanks Node {}!'.format(Chord.lookup_node(address)))
 
     # data_added = Chord.populate(address, keys)
     # for data in data_added:

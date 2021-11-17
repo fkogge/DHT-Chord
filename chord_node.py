@@ -9,12 +9,13 @@ from datetime import datetime
 from enum import Enum
 from random import randrange
 
-M = 3  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
+M = 4  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
 NODES = 2 ** M
 BUF_SZ = 8192  # socket recv arg
 BACKLOG = 100  # socket listen arg
 TEST_BASE = 43544  # for testing use port numbers on localhost at TEST_BASE+n
 MIN_PORT = 50000
+MAX_PORT = 2 ** 16
 DEFAULT_HOST = 'localhost'
 POSSIBLE_PORTS = range(2 ** 16)
 RPC_TIMEOUT = 3
@@ -153,9 +154,8 @@ class RPC(Enum):
 
 
 class ChordNode(object):
-    #def __init__(self, n):
+
     def __init__(self, port, buddy_port=None):
-        #self.node = n  # Identifier of this node
         self.address = (DEFAULT_HOST, port)
         self.node = Chord.lookup_node(self.address)
         self.finger = [None] + [FingerEntry(self.node, k)
@@ -165,18 +165,6 @@ class ChordNode(object):
         self.buddy_node = Chord.lookup_node((DEFAULT_HOST, buddy_port)) if buddy_port else None
         self.lock = threading.Lock()
         print('Node ID = {} is on {}'.format(self.node, self.address))
-
-        #self.listener_address = (DEFAULT_HOST, port)
-        #self.listener = self.start_listening_server()
-        #print('Node ID = {} joined on {} at [{}]'
-             # .format(self.node, self.listener_address, Chord.print_time()))
-
-    def init_key_map(self):
-        pass
-        #self.keys = {key: None for key in ModRange(self.predecessor + 1, self.node + 1, NODES)}
-
-    def update_key_map(self):
-        self.keys = {key: self.keys[key] for key in ModRange(self.predecessor + 1, self.node + 1, NODES)}
 
     def run_server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
@@ -202,6 +190,13 @@ class ChordNode(object):
         client_sock.sendall(pickle.dumps(result))
 
     def dispatch_rpc(self, method, arg1=None, arg2=None):
+        """
+        Make local call to the method that was called via RPC from another node.
+        :param method:
+        :param arg1:
+        :param arg2:
+        :return:
+        """
         if method == RPC.FIND_SUCCESSOR.value:
             return self.find_successor(arg1)
 
@@ -216,7 +211,6 @@ class ChordNode(object):
 
         elif method == RPC.UPDATE_FINGER_TABLE.value:
             self.print_thread(self.update_finger_table(arg1, arg2))
-            #self.update_keys()
 
         elif method == RPC.SET_PREDECESSOR.value:
             self.set_predecessor(arg1)
@@ -233,32 +227,29 @@ class ChordNode(object):
         elif method == RPC.UPDATE_KEYS.value:
             return self.update_keys()
 
-
         return 'no return value'
 
-    def update_keys(self):
-        remove_list = []
-        for key, data in self.keys.items():
-            if key not in ModRange(self.predecessor + 1, self.node + 1, NODES):
-                remove_list.append(key)
-                n_prime = self.find_successor(key)
-                self.call_rpc(n_prime, RPC.ADD_KEY, key, data)
-
-        for key in remove_list:
-            del self.keys[key]
-
-        self.print_thread(self.keys)
-
-
     def call_rpc(self, n_prime, method: RPC, arg1=None, arg2=None):
+        """
+        Makes an RPC call to the given method, with the given arguments. If no
+        arguments are passed, assume that the method to invoke does not take
+        any arguments. No RPC method takes more than 2 arguments currently.
+        :param n_prime: node to contact and invoke RPC on
+        :param method: method to invoke
+        :param arg1: first argument
+        :param arg2: second argument
+        :return: return value of the RPC method
+        """
         method_name = method.value
-        # If RPC requested on myself, then just do a local call
+
         if n_prime == self.node:
+            # If RPC requested on myself, then just do a local call
             return self.dispatch_rpc(method_name, arg1, arg2)
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as n_prime_sock:
             n_prime_address = Chord.lookup_address(n_prime)
             n_prime_sock.settimeout(RPC_TIMEOUT)
+
             try:
                 n_prime_sock.connect(n_prime_address)
                 marshalled_data = pickle.dumps((method_name, arg1, arg2))
@@ -266,8 +257,9 @@ class ChordNode(object):
                 return pickle.loads(n_prime_sock.recv(BUF_SZ))
 
             except Exception as e:
-                self.print_thread('Failed to connect to Node ID = {}, RPC aborted at [{}]'
-                      .format(n_prime, Chord.print_time()))
+                self.print_thread('Failed to connect to Node ID = {}, RPC '
+                                  'aborted at [{}]'
+                                  .format(n_prime, Chord.print_time()))
                 return None
 
     @property
@@ -302,10 +294,16 @@ class ChordNode(object):
         return self.node
 
     def join(self):
+        """
+        Joins this node to the network. If there's an existing network, it will
+        ask its buddy node for help setting up its finger table.
+        """
         if self.buddy_node:
             self.init_finger_table(self.buddy_node)
             self.update_others()
-            #self.call_rpc()
+            # Tell successor that I'll take over the keys from your old
+            # predecessor because that's now my predecessor
+            self.call_rpc(self.successor, RPC.UPDATE_KEYS)
         else:
             for i in range(1, M + 1):
                 self.finger[i].node = self.node
@@ -314,21 +312,31 @@ class ChordNode(object):
         self.print_thread('Joined network at [{}]'.format(Chord.print_time()))
 
     def update_keys(self):
+        """
+        Updates this node's key bucket. Transfers any keys that are now out of
+        range from predecessor to myself to the key's new successor, then
+        removes any keys that were transferred.
+        """
         remove_list = []
         for key, data in self.keys.items():
             if key not in ModRange(self.predecessor + 1, self.node + 1, NODES):
                 remove_list.append(key)
                 n_prime = self.find_successor(key)
                 self.call_rpc(n_prime, RPC.ADD_KEY, key, data)
+                self.print_thread('Transferred key {} to Node ID = {} at {}'
+                                  .format(key, n_prime, Chord.print_time()))
 
         for key in remove_list:
             del self.keys[key]
 
-        n_prime = self.successor
-        self.call_rpc(n_prime, RPC.UPDATE_KEYS)
+        self.print_thread(self.keys)
 
 
     def init_finger_table(self, n_prime):
+        """
+        Initializes this node's finger table of successor nodes.
+        :param n_prime: node to ask for help
+        """
         self.finger[1].node = self.call_rpc(n_prime, RPC.FIND_SUCCESSOR,
                                             self.finger[1].start)
 
@@ -336,7 +344,6 @@ class ChordNode(object):
         self.predecessor = self.call_rpc(self.successor, RPC.GET_PREDECESSOR)
         # Pseudocode: successor.predecessor = n;
         self.call_rpc(self.successor, RPC.SET_PREDECESSOR, self.node)
-
 
         for i in range(1, M):
             if self.finger[i + 1].start in ModRange(self.node,
@@ -374,22 +381,14 @@ class ChordNode(object):
             #print('#', self)
             p = self.predecessor  # get first node preceding myself
             self.call_rpc(p, RPC.UPDATE_FINGER_TABLE, s, i)
-            #self.update_key_map()
-            #print(self.keys)
             print(self.print_finger_table())
             return str(self)
         else:
-            #self.update_key_map()
-            #print(self.keys)
             self.print_thread(self.print_finger_table())
             return 'did nothing {}'.format(self)
 
     def __repr__(self):
         return str(self.node)
-
-    def print_finger_table(self):
-        """Prints the finger table contents."""
-        return '\n'.join(str(row) for row in self.finger[1:])
 
     def add_key(self, key, data):
         """
@@ -409,7 +408,8 @@ class ChordNode(object):
             self.print_thread(self.keys)
             return 'Node {} added key {}'.format(self.node, key)
         else:
-            # Find key successor
+            # If key is not mine, then find the successor who should be
+            # responsible and tell them to add it to their bucket
             n_prime = self.find_successor(key)
             return self.call_rpc(n_prime, RPC.ADD_KEY, key, data)
 
@@ -425,13 +425,17 @@ class ChordNode(object):
         if key in ModRange(self.predecessor + 1, self.node + 1, NODES):
             return self.keys[key]
         else:
-            # Find key successor
+            # If key is not mine, then find the successor who is responsible
             n_prime = self.find_successor(key)
             return self.call_rpc(n_prime, RPC.GET_DATA, key)
 
     def print_neighbors(self):
         return 'predecessor: {}\nsucessor: {}'.format(self.predecessor,
                                                       self.successor)
+
+    def print_finger_table(self):
+        """Prints the finger table contents."""
+        return '\n'.join(str(row) for row in self.finger[1:])
 
     def print_thread(self, text):
         """
@@ -496,23 +500,30 @@ class Chord(object):
     @staticmethod
     def populate(address: tuple[str, int], keys: dict):
         """
-        Populate
-        :param address:
-        :param keys:
-        :return:
+        Populates the Chord network with the given dictionary keys mapped to
+        their data elements.
+        :param address: known Chord node's address
+        :param keys: dictionary of keys to populate into the network
+        :return: data received from the Chord node
         """
         return Chord.contact_node(address, RPC.ADD_KEY, key_map=keys)
 
     @staticmethod
     def lookup_key(address: tuple[str, int], key: str):
+        """
+        Asks the Chord node at the given address to lookup the given key, and
+        returns the data that the key is mapped to.
+        :param address: known Chord node's address
+        :param key: key to lookup data for
+        :return: data mapped to the given key
+        """
         return Chord.contact_node(address, RPC.GET_DATA, key=key)[0]
 
     @staticmethod
     def generate_node_map():
         """
         Hash all possible IP addresses, assuming we're using local host, to
-        possible M-bit ID matches. Map all of the possible IDs to the port
-        number pair.
+        possible M-bit ID matches. Limiting one port number to each node ID.
         :return:
         """
         for node in range(NODES):
@@ -523,52 +534,21 @@ class Chord(object):
                 generated_node = Chord.lookup_node((DEFAULT_HOST, port))
             Chord.node_map[node] = (DEFAULT_HOST, port)
 
-
-        # for node in range(NODES):
-        #     Chord.node_map[node] = []
-        #     # generated_node = -1
-        #     # port = MIN_PORT
-        #     # while generated_node != node:
-        #     #     port = randrange(MIN_PORT, 2 ** 16)
-        #     #     generated_node = Chord.lookup_node((DEFAULT_HOST, port))
-        #     # Chord.node_map[node] = port
-        #
-        # for port in range(MIN_PORT, 2 ** 16):
-        #     node = Chord.lookup_node((DEFAULT_HOST, port))
-        #     Chord.node_map[node].append(port)
-
     @staticmethod
     def lookup_address(node):
         return Chord.node_map[node]
 
-        # port_list = Chord.node_map[node]
-        # for port in port_list:
-        #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        #         address = (DEFAULT_HOST, port)
-        #         try:
-        #             sock.bind(address)
-        #
-        #         except Exception as e:
-        #                 # If can't bind that, means a node is using it
-        #             print('Found Node {} on {} at [{}]'
-        #                   .format(node, address, Chord.print_time()))
-        #             return address
-
-    # if node_map was the other way around (port key to id value)
-
-
     @staticmethod
     def lookup_node(address):
         """
-
-        :param
+        Converts a (host, port) address to an M-bit ID, and returns that ID.
+        :param address: (host, port) address
         :return: M-bit node ID
         """
-        # for port in POSSIBLE_PORTS:
         marshalled_address = pickle.dumps(address)
         marshalled_hash = hashlib.sha1(marshalled_address).digest()
         unmarshalled_hash = int.from_bytes(marshalled_hash, byteorder='big')
-        return unmarshalled_hash % NODES  # 2^M
+        return unmarshalled_hash % NODES  # Reduce from 160-bit to M-bit ID
 
     @staticmethod
     def get_empty_port():
@@ -636,6 +616,7 @@ def main():
 
     new_node.join()
     new_node.run_server()
+
 
 if __name__ == '__main__':
     main()
