@@ -4,11 +4,12 @@ import threading
 import sys
 import pickle
 import hashlib
+import time
 from datetime import datetime
 from enum import Enum
 from random import randrange
 
-M = 4  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
+M = 3  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
 NODES = 2 ** M
 BUF_SZ = 8192  # socket recv arg
 BACKLOG = 100  # socket listen arg
@@ -127,7 +128,7 @@ class FingerEntry(object):
     def __repr__(self):
         """ Something like the interval|node charts in the paper """
         return '{:<2} | [{:<2}, {:<2}) | {}'.format(self.start, self.start,
-                                           self.next_start, self.node)
+                                                    self.next_start, self.node)
 
     def __contains__(self, id):
         """ Is the given id within this finger's interval? """
@@ -148,19 +149,27 @@ class RPC(Enum):
     GET_PREDECESSOR = 'get_predecessor'
     ADD_KEY = 'add_key'
     GET_DATA = 'get_data'
+    UPDATE_KEYS = 'update_keys'
 
 
 class ChordNode(object):
-    def __init__(self, n):
-        self.node = n  # Identifier of this node
-        self.finger = [None] + [FingerEntry(n, k) for k in range(1, M + 1)]  # index i of finger table: 1 <= i <= M
+    #def __init__(self, n):
+    def __init__(self, port, buddy_port=None):
+        #self.node = n  # Identifier of this node
+        self.address = (DEFAULT_HOST, port)
+        self.node = Chord.lookup_node(self.address)
+        self.finger = [None] + [FingerEntry(self.node, k)
+                                for k in range(1, M + 1)]  # index i of finger table: 1 <= i <= M
         self.predecessor = None
         self.keys = {}
+        self.buddy_node = Chord.lookup_node((DEFAULT_HOST, buddy_port)) if buddy_port else None
+        self.lock = threading.Lock()
+        print('Node ID = {} is on {}'.format(self.node, self.address))
 
-        self.listener_address = (DEFAULT_HOST, Chord.get_empty_port(self.node))
-        self.listener = self.start_listening_server()
-        print('Node ID = {} joined on {} at [{}]'
-              .format(self.node, self.listener_address, Chord.print_time()))
+        #self.listener_address = (DEFAULT_HOST, port)
+        #self.listener = self.start_listening_server()
+        #print('Node ID = {} joined on {} at [{}]'
+             # .format(self.node, self.listener_address, Chord.print_time()))
 
     def init_key_map(self):
         pass
@@ -170,16 +179,25 @@ class ChordNode(object):
         self.keys = {key: self.keys[key] for key in ModRange(self.predecessor + 1, self.node + 1, NODES)}
 
     def run_server(self):
-        while True:
-            print(self.print_neighbors())
-            print('\nWaiting for incoming connection...\n')
-            client_sock, client_address = self.listener.accept()
-            threading.Thread(target=self.handle_rpc, args=(client_sock,)).start()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(self.address)
+            listener.listen(BACKLOG)
+
+            while True:
+                self.print_thread('\n******** Data ********\n'
+                                  + self.print_neighbors() + '\n'
+                                  + self.print_finger_table()
+                                  + '\n**********************\n'
+                                  + '\nWaiting for incoming connection...\n')
+
+                client_sock, client_address = listener.accept()
+                threading.Thread(target=self.handle_rpc,
+                                 args=(client_sock,)).start()
 
     def handle_rpc(self, client_sock):
         rpc = client_sock.recv(BUF_SZ)
         method, arg1, arg2 = pickle.loads(rpc)
-        print('Received RPC request: \"{}\"'.format(method))
+        self.print_thread('Received RPC request: \"{}\"'.format(method))
         result = self.dispatch_rpc(method, arg1, arg2)
         client_sock.sendall(pickle.dumps(result))
 
@@ -197,8 +215,8 @@ class ChordNode(object):
             return self.closest_preceding_finger(arg1)
 
         elif method == RPC.UPDATE_FINGER_TABLE.value:
-            print(self.update_finger_table(arg1, arg2))
-            self.update_keys()
+            self.print_thread(self.update_finger_table(arg1, arg2))
+            #self.update_keys()
 
         elif method == RPC.SET_PREDECESSOR.value:
             self.set_predecessor(arg1)
@@ -212,22 +230,24 @@ class ChordNode(object):
         elif method == RPC.GET_DATA.value:
             return self.get_data(arg1)
 
+        elif method == RPC.UPDATE_KEYS.value:
+            return self.update_keys()
+
+
         return 'no return value'
 
-    def update_keys(self, new_key=None, new_data=None):
-        if new_key and new_data:
-            self.keys[new_key] = new_data
-            return
-
+    def update_keys(self):
         remove_list = []
         for key, data in self.keys.items():
-            if key not in ModRange(self.predecessor + 1, self.successor + 1, NODES):
+            if key not in ModRange(self.predecessor + 1, self.node + 1, NODES):
                 remove_list.append(key)
                 n_prime = self.find_successor(key)
-                self.call_rpc(n_prime, RPC.UPDATE_KEYS, key, data)
+                self.call_rpc(n_prime, RPC.ADD_KEY, key, data)
 
         for key in remove_list:
             del self.keys[key]
+
+        self.print_thread(self.keys)
 
 
     def call_rpc(self, n_prime, method: RPC, arg1=None, arg2=None):
@@ -246,7 +266,7 @@ class ChordNode(object):
                 return pickle.loads(n_prime_sock.recv(BUF_SZ))
 
             except Exception as e:
-                print('Failed to connect to Node ID = {}, RPC aborted at [{}]'
+                self.print_thread('Failed to connect to Node ID = {}, RPC aborted at [{}]'
                       .format(n_prime, Chord.print_time()))
                 return None
 
@@ -281,18 +301,31 @@ class ChordNode(object):
                 return self.finger[i].node
         return self.node
 
-    def join(self, n_prime=None):
-        if n_prime:
-            self.init_finger_table(n_prime)
+    def join(self):
+        if self.buddy_node:
+            self.init_finger_table(self.buddy_node)
             self.update_others()
+            #self.call_rpc()
         else:
             for i in range(1, M + 1):
                 self.finger[i].node = self.node
             self.predecessor = self.node
-        #self.init_key_map()
-        print('Joined network at [{}]'.format(Chord.print_time()))
-        print(self.print_finger_table())
 
+        self.print_thread('Joined network at [{}]'.format(Chord.print_time()))
+
+    def update_keys(self):
+        remove_list = []
+        for key, data in self.keys.items():
+            if key not in ModRange(self.predecessor + 1, self.node + 1, NODES):
+                remove_list.append(key)
+                n_prime = self.find_successor(key)
+                self.call_rpc(n_prime, RPC.ADD_KEY, key, data)
+
+        for key in remove_list:
+            del self.keys[key]
+
+        n_prime = self.successor
+        self.call_rpc(n_prime, RPC.UPDATE_KEYS)
 
 
     def init_finger_table(self, n_prime):
@@ -313,7 +346,7 @@ class ChordNode(object):
                 self.finger[i + 1].node = \
                     self.call_rpc(n_prime, RPC.FIND_SUCCESSOR,
                                   self.finger[i + 1].start)
-        print('Initialize finger table complete at [{}]'
+        self.print_thread('Initialize finger table complete at [{}]'
               .format(Chord.print_time()))
 
     def update_others(self):
@@ -334,11 +367,11 @@ class ChordNode(object):
         if (self.finger[i].start != self.finger[i].node
                 and s in ModRange(self.finger[i].start,
                                   self.finger[i].node, NODES)):
-            print('update_finger_table({},{}): {}[{}] = {} since {} in [{},{})'
+            self.print_thread('update_finger_table({},{}): {}[{}] = {} since {} in [{},{})'
                   .format(s, i, self.node, i, s, s, self.finger[i].start,
                           self.finger[i].node))
             self.finger[i].node = s
-            print('#', self)
+            #print('#', self)
             p = self.predecessor  # get first node preceding myself
             self.call_rpc(p, RPC.UPDATE_FINGER_TABLE, s, i)
             #self.update_key_map()
@@ -348,17 +381,11 @@ class ChordNode(object):
         else:
             #self.update_key_map()
             #print(self.keys)
-            print(self.print_finger_table())
+            self.print_thread(self.print_finger_table())
             return 'did nothing {}'.format(self)
 
     def __repr__(self):
         return str(self.node)
-
-    def start_listening_server(self):
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.bind(self.listener_address)
-        listener.listen(BACKLOG)
-        return listener
 
     def print_finger_table(self):
         """Prints the finger table contents."""
@@ -379,7 +406,7 @@ class ChordNode(object):
 
         if key in ModRange(self.predecessor + 1, self.node + 1, NODES):
             self.keys[key] = data
-            print(self.keys)
+            self.print_thread(self.keys)
             return 'Node {} added key {}'.format(self.node, key)
         else:
             # Find key successor
@@ -405,6 +432,16 @@ class ChordNode(object):
     def print_neighbors(self):
         return 'predecessor: {}\nsucessor: {}'.format(self.predecessor,
                                                       self.successor)
+
+    def print_thread(self, text):
+        """
+        Printing helper method for letting only one thread print at a time, to
+        improve output readability.
+        :param text: text to print
+        """
+        self.lock.acquire()
+        print(text)
+        self.lock.release()
 
 class Chord(object):
 
@@ -478,28 +515,44 @@ class Chord(object):
         number pair.
         :return:
         """
-        for n in range(NODES):
-            Chord.node_map[n] = []
+        for node in range(NODES):
+            generated_node = -1
+            port = MIN_PORT
+            while generated_node != node:
+                port += 1
+                generated_node = Chord.lookup_node((DEFAULT_HOST, port))
+            Chord.node_map[node] = (DEFAULT_HOST, port)
 
-        for port in range(MIN_PORT, 2 ** 16):
-            node = Chord.lookup_node((DEFAULT_HOST, port))
-            Chord.node_map[node].append(port)
+
+        # for node in range(NODES):
+        #     Chord.node_map[node] = []
+        #     # generated_node = -1
+        #     # port = MIN_PORT
+        #     # while generated_node != node:
+        #     #     port = randrange(MIN_PORT, 2 ** 16)
+        #     #     generated_node = Chord.lookup_node((DEFAULT_HOST, port))
+        #     # Chord.node_map[node] = port
+        #
+        # for port in range(MIN_PORT, 2 ** 16):
+        #     node = Chord.lookup_node((DEFAULT_HOST, port))
+        #     Chord.node_map[node].append(port)
 
     @staticmethod
     def lookup_address(node):
-        print(node)
-        port_list = Chord.node_map[node]
-        for port in port_list:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                address = (DEFAULT_HOST, port)
-                try:
-                    sock.bind(address)
+        return Chord.node_map[node]
 
-                except Exception as e:
-                        # If can't bind that, means a node is using it
-                    print('Found Node {} on {} at [{}]'
-                          .format(node, address, Chord.print_time()))
-                    return address
+        # port_list = Chord.node_map[node]
+        # for port in port_list:
+        #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        #         address = (DEFAULT_HOST, port)
+        #         try:
+        #             sock.bind(address)
+        #
+        #         except Exception as e:
+        #                 # If can't bind that, means a node is using it
+        #             print('Found Node {} on {} at [{}]'
+        #                   .format(node, address, Chord.print_time()))
+        #             return address
 
     # if node_map was the other way around (port key to id value)
 
@@ -518,18 +571,36 @@ class Chord(object):
         return unmarshalled_hash % NODES  # 2^M
 
     @staticmethod
-    def get_empty_port(node_id):
+    def get_empty_port():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            port_list = Chord.node_map[node_id]
-            for port in port_list:
-                address = (DEFAULT_HOST, port)
+            ids_left = set(node for node in range(NODES))
+            while ids_left:
+                node_id = randrange(0, NODES)
+                address = Chord.node_map[node_id]
+                port = address[1]
 
                 try:
                     sock.bind(address)
                 except Exception as e:
                     print("Port {} in use.".format(port))
+                    if node_id in ids_left:
+                        ids_left.remove(node_id)
                 else:
                     return port
+        return None
+
+        # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        #     port_list = Chord.node_map[node_id]
+        #     for port in port_list:
+        #         address = (DEFAULT_HOST, port)
+        #
+        #         try:
+        #             sock.bind(address)
+        #         except Exception as e:
+        #             print("Port {} in use.".format(port))
+        #             node_id = randrange(0, NODES)
+        #         else:
+        #             return port
 
     @staticmethod
     def print_time():
@@ -545,67 +616,26 @@ def main():
         print('Usage: chord_node.py NODE_PORT_NUMBER (enter 0 if '
               'starting new network)')
         Chord.generate_node_map()
-        for i in range(M, 0, -1):
-            print(i)
         print(Chord.node_map)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(('localhost', 55321))
-        sock.close() # If close first, then i can rebind port 55321 to a new socket
-        sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock2.bind(('localhost', 55321))
 
-        sock2.close()
-
+        for node, address in Chord.node_map.items():
+            print('Node {}: address {} hashes to node {}'.format(node, address, Chord.lookup_node(address)))
         exit(1)
 
     Chord.generate_node_map()
-    node_port = int(sys.argv[1])
-    known_node_id = None
+    known_node_port = int(sys.argv[1])
+    new_node_port = Chord.get_empty_port()
+    if not new_node_port:
+        print('Chord network is full - sorry :(')
+        exit(1)
 
-    # Create new Chord network
-    if node_port == 0:
-        # Get any random m-bit ID
-        node = randrange(0, NODES)
-        #join()
-
+    if known_node_port == 0:
+        new_node = ChordNode(new_node_port)
     else:
-        known_node_id = Chord.lookup_node(('localhost', node_port))
-        node = known_node_id
-        while node == known_node_id:
-            node = randrange(0, NODES)
-        #join(known_node_id)
+        new_node = ChordNode(new_node_port, known_node_port)
 
-    new_node = ChordNode(node)
-    new_node.join(known_node_id)
+    new_node.join()
     new_node.run_server()
-
-        # Lookup node ID from the known Chord node port passed in
-
-        # Hash the address of the KNOWN node port
-        #address_hash = hashlib.sha1(pickle.dumps((POSSIBLE_HOSTS[0], node_port)))
-        # Get node ID of the KNOWN node
-
-        #known_node_id = Chord.lookup_node(POSSIBLE_HOSTS[0] + node_port)
-        # Create a NEW node TODO how to figure out the next ID value to add?
-        #new_node = ChordNode(node_id)
-        # Join the NEW node to the existing network using the KNOWN node ID
-        #new_node.join(known_node_id)
-
-
-
-
-    # if node_port == 0:
-    #     # Start a new network
-    #     node = ChordNode(node_id)
-    #     node.run_server()
-    # else:
-    #     # Join the existing network with known node port number
-    #     # TODO create new node -
-    #     pass
-
-
-
-
 
 if __name__ == '__main__':
     main()
