@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from random import randrange
 
-M = 3  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
+M = 7  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
 NODES = 2 ** M
 BUF_SZ = 8192  # socket recv arg
 BACKLOG = 100  # socket listen arg
@@ -384,6 +384,8 @@ class ChordNode(object):
         for key in remove_list:
             del self.keys[key]
 
+        #self.print_thread('Key bucket:')
+        #for key in self.keys:
         self.print_thread(self.keys)
 
 
@@ -392,6 +394,10 @@ class ChordNode(object):
         Initializes this node's finger table of successor nodes.
         :param n_prime: node to ask for help
         """
+        succeessor = self.call_rpc(n_prime, RPC.FIND_SUCCESSOR,
+                                   self.finger[1].start)
+        if not succeessor:
+            exit(1)
         self.finger[1].node = self.call_rpc(n_prime, RPC.FIND_SUCCESSOR,
                                             self.finger[1].start)
 
@@ -437,10 +443,9 @@ class ChordNode(object):
             #print('#', self)
             p = self.predecessor  # get first node preceding myself
             self.call_rpc(p, RPC.UPDATE_FINGER_TABLE, s, i)
-            print(self.print_finger_table())
+            self.print_thread(self.print_finger_table())
             return str(self)
         else:
-            self.print_thread(self.print_finger_table())
             return 'did nothing {}'.format(self)
 
     def __repr__(self):
@@ -574,7 +579,10 @@ class Chord(object):
         :param key: key to lookup data for
         :return: data mapped to the given key
         """
-        return Chord.contact_node(address, RPC.GET_DATA, key=key)[0]
+        data = Chord.contact_node(address, RPC.GET_DATA, key=key)[0]
+        if data[0] + data[2] not in key:
+            return None
+        return data
 
     @staticmethod
     def generate_node_map():

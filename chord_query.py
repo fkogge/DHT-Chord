@@ -13,8 +13,12 @@ def main():
           .format(Chord.lookup_node(address), key))
 
     data_list = Chord.lookup_key(address, key)
-    for data in data_list:
-        print(data)
+
+    if data_list:
+        for data in data_list:
+            print(data)
+    else:
+        print('No data found.')
 
 
 if __name__ == '__main__':
