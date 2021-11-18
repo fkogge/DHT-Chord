@@ -1,15 +1,13 @@
-import random
 import socket
-import threading
 import sys
 import pickle
 import hashlib
-import time
+from threading import Thread, Lock
 from datetime import datetime
 from enum import Enum
 from random import randrange
 
-M = 7  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
+M = 3  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
 NODES = 2 ** M
 BUF_SZ = 8192  # socket recv arg
 BACKLOG = 100  # socket listen arg
@@ -163,33 +161,41 @@ class ChordNode(object):
         self.predecessor = None
         self.keys = {}
         self.buddy_node = Chord.lookup_node((DEFAULT_HOST, buddy_port)) if buddy_port else None
-        self.lock = threading.Lock()
+        self.lock = Lock()
         self.listener = self.start_listening_server()
         print('Node ID = {} is on {}'.format(self.node, self.address))
 
     def start_listening_server(self):
+        """
+        Starts a TCP listening server.
+        :return: listener socket
+        """
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.bind(self.address)
         listener.listen(BACKLOG)
         return listener
 
     def run_server(self):
-        # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        #     listener.bind(self.address)
-        #     listener.listen(BACKLOG)
-
+        """
+        Runs the server loop that listens for incoming connections using
+        multithreading.
+        """
         while True:
             self.print_thread('\n******** Data ********\n'
-                                  + self.print_neighbors() + '\n'
-                                  + self.print_finger_table()
-                                  + '\n**********************\n'
-                                  + '\nWaiting for incoming connection...\n')
+                              + self.print_neighbors() + '\n'
+                              + self.print_finger_table()
+                              + '\n**********************\n'
+                              + '\nWaiting for incoming connection...\n')
 
             client_sock, client_address = self.listener.accept()
-            threading.Thread(target=self.handle_rpc,
-                                 args=(client_sock,)).start()
+            Thread(target=self.handle_rpc, args=(client_sock,)).start()
 
     def handle_rpc(self, client_sock):
+        """
+        Handles any RPC calls requested from other nodes, discovered from the
+        thread server loop, and sends back the result to the client node.
+        :param client_sock: incoming TCp socket from another node
+        """
         rpc = client_sock.recv(BUF_SZ)
         method, arg1, arg2 = pickle.loads(rpc)
         self.print_thread('Received RPC request: \"{}\"'.format(method))
@@ -269,37 +275,72 @@ class ChordNode(object):
                 return pickle.loads(n_prime_sock.recv(BUF_SZ))
 
             except Exception as e:
-                self.print_thread('Failed to connect to Node ID = {}, thread'
+                self.print_thread('Failed to connect to Node ID = {}, thread '
                                   'might be busy. RPC aborted at [{}]'
                                   .format(n_prime, Chord.print_time()))
                 return None
 
     @property
     def successor(self):
+        """
+        Returns successor of this node which is first entry in its finger table.
+        :return: successor node
+        """
         return self.finger[1].node
 
     @successor.setter
     def successor(self, id):
+        """
+        Sets the successor of this node at the first entry in its finger table.
+        :param id: successor node
+        """
         self.finger[1].node = id
 
     def set_predecessor(self, node):
+        """
+        Sets the predecessor of this node
+        :param node: predecessor node
+        """
         self.predecessor = node
 
     def get_predecessor(self):
+        """
+        Returns the predecessor of this node.
+        :return: predecessor node
+        """
         return self.predecessor
 
     def find_successor(self, id):
-        """ Ask this node to find id's successor = successor(predecessor(id))"""
+        """
+        Finds and returns the successor of the given M-bit ID.
+        :param id: M-bit ID in the identifier space
+        :return: successor node to the ID
+        """
+        # Ask predecessor node for its successor through RPC call
         n_prime = self.find_predecessor(id)
         return self.call_rpc(n_prime, RPC.SUCCESSOR)
 
     def find_predecessor(self, id):
+        """
+        Finds and returns the predecessor of the given M-bit ID.
+        :param id: M-bit ID in the identifier space
+        :return: predecessor of the ID
+        """
         n_prime = self.node
-        while id not in ModRange(n_prime + 1, self.call_rpc(n_prime, RPC.SUCCESSOR) + 1, NODES):
+        while id not in ModRange(n_prime + 1,
+                                 self.call_rpc(n_prime, RPC.SUCCESSOR) + 1,
+                                 NODES):
             n_prime = self.call_rpc(n_prime, RPC.CLOSEST_PRECEDING_FINGER, id)
         return n_prime
 
     def closest_preceding_finger(self, id):
+        """
+        Finds and returns the node, in this node's finger table, that is the
+        closest preceding node to the given M-bit ID.
+        :param id: M-bit ID in the identifier space
+        :return: closest preceding node
+        """
+        # Starting at the bottom of the table
         for i in range(M, 0, -1):
             if self.finger[i].node in ModRange(self.node + 1, id, NODES):
                 return self.finger[i].node
@@ -331,6 +372,8 @@ class ChordNode(object):
         """
         remove_list = []
         for key, data in self.keys.items():
+            # Transfer and remove any keys that are not between my predecessor
+            # and myself
             if key not in ModRange(self.predecessor + 1, self.node + 1, NODES):
                 remove_list.append(key)
                 n_prime = self.find_successor(key)
@@ -352,9 +395,7 @@ class ChordNode(object):
         self.finger[1].node = self.call_rpc(n_prime, RPC.FIND_SUCCESSOR,
                                             self.finger[1].start)
 
-        # Pseudocode: predecessor = successor.predecessor;
         self.predecessor = self.call_rpc(self.successor, RPC.GET_PREDECESSOR)
-        # Pseudocode: successor.predecessor = n;
         self.call_rpc(self.successor, RPC.SET_PREDECESSOR, self.node)
 
         for i in range(1, M):
@@ -366,7 +407,7 @@ class ChordNode(object):
                     self.call_rpc(n_prime, RPC.FIND_SUCCESSOR,
                                   self.finger[i + 1].start)
         self.print_thread('Initialize finger table complete at [{}]'
-              .format(Chord.print_time()))
+                          .format(Chord.print_time()))
 
     def update_others(self):
         """
@@ -376,7 +417,8 @@ class ChordNode(object):
         # find last node p whose i-th finger might be this node
         for i in range(1, M + 1):
             # FIXME: bug in paper, have to add the 1 +
-            p = self.find_predecessor((1 + self.node - 2 ** (i - 1) + NODES) % NODES)
+            p = self.find_predecessor((1 + self.node - 2 ** (i - 1) + NODES) %
+                                      NODES)
             self.call_rpc(p, RPC.UPDATE_FINGER_TABLE, self.node, i)
 
     def update_finger_table(self, s, i):
@@ -386,9 +428,11 @@ class ChordNode(object):
         if (self.finger[i].start != self.finger[i].node
                 and s in ModRange(self.finger[i].start,
                                   self.finger[i].node, NODES)):
-            self.print_thread('update_finger_table({},{}): {}[{}] = {} since {} in [{},{})'
-                  .format(s, i, self.node, i, s, s, self.finger[i].start,
-                          self.finger[i].node))
+            self.print_thread('update_finger_table({},{}): {}[{}] = {} since {}'
+                              ' in [{},{})'
+                              .format(s, i, self.node, i, s, s,
+                                      self.finger[i].start,
+                                      self.finger[i].node))
             self.finger[i].node = s
             #print('#', self)
             p = self.predecessor  # get first node preceding myself
@@ -442,11 +486,12 @@ class ChordNode(object):
             return self.call_rpc(n_prime, RPC.GET_DATA, key)
 
     def print_neighbors(self):
+        """Printing helper for neighbor nodes (predecessor and successor."""
         return 'predecessor: {}\nsucessor: {}'.format(self.predecessor,
                                                       self.successor)
 
     def print_finger_table(self):
-        """Prints the finger table contents."""
+        """Printing helper for finger table contents."""
         return '\n'.join(str(row) for row in self.finger[1:])
 
     def print_thread(self, text):
@@ -580,19 +625,6 @@ class Chord(object):
                 else:
                     return port
         return None
-
-        # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        #     port_list = Chord.node_map[node_id]
-        #     for port in port_list:
-        #         address = (DEFAULT_HOST, port)
-        #
-        #         try:
-        #             sock.bind(address)
-        #         except Exception as e:
-        #             print("Port {} in use.".format(port))
-        #             node_id = randrange(0, NODES)
-        #         else:
-        #             return port
 
     @staticmethod
     def print_time():
