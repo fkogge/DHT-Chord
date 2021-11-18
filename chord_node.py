@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from random import randrange
 
-M = 4  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
+M = 7  # FIXME: Test environment, normally = hashlib.sha1().digest_size * 8
 NODES = 2 ** M
 BUF_SZ = 8192  # socket recv arg
 BACKLOG = 100  # socket listen arg
@@ -164,22 +164,29 @@ class ChordNode(object):
         self.keys = {}
         self.buddy_node = Chord.lookup_node((DEFAULT_HOST, buddy_port)) if buddy_port else None
         self.lock = threading.Lock()
+        self.listener = self.start_listening_server()
         print('Node ID = {} is on {}'.format(self.node, self.address))
 
-    def run_server(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-            listener.bind(self.address)
-            listener.listen(BACKLOG)
+    def start_listening_server(self):
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(self.address)
+        listener.listen(BACKLOG)
+        return listener
 
-            while True:
-                self.print_thread('\n******** Data ********\n'
+    def run_server(self):
+        # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        #     listener.bind(self.address)
+        #     listener.listen(BACKLOG)
+
+        while True:
+            self.print_thread('\n******** Data ********\n'
                                   + self.print_neighbors() + '\n'
                                   + self.print_finger_table()
                                   + '\n**********************\n'
                                   + '\nWaiting for incoming connection...\n')
 
-                client_sock, client_address = listener.accept()
-                threading.Thread(target=self.handle_rpc,
+            client_sock, client_address = self.listener.accept()
+            threading.Thread(target=self.handle_rpc,
                                  args=(client_sock,)).start()
 
     def handle_rpc(self, client_sock):
@@ -191,11 +198,12 @@ class ChordNode(object):
 
     def dispatch_rpc(self, method, arg1=None, arg2=None):
         """
-        Make local call to the method that was called via RPC from another node.
-        :param method:
-        :param arg1:
-        :param arg2:
-        :return:
+        Dispatches RPC call from another node to a local method call on
+        this node.
+        :param method: method to call
+        :param arg1: first argument
+        :param arg2: second argument
+        :return: return value of the method called (if it has one)
         """
         if method == RPC.FIND_SUCCESSOR.value:
             return self.find_successor(arg1)
@@ -227,6 +235,10 @@ class ChordNode(object):
         elif method == RPC.UPDATE_KEYS.value:
             return self.update_keys()
 
+        else:
+            self.print_thread('RPC failure at [{}]: no such method exists'
+                              .format(Chord.print_time()))
+
         return 'no return value'
 
     def call_rpc(self, n_prime, method: RPC, arg1=None, arg2=None):
@@ -257,8 +269,8 @@ class ChordNode(object):
                 return pickle.loads(n_prime_sock.recv(BUF_SZ))
 
             except Exception as e:
-                self.print_thread('Failed to connect to Node ID = {}, RPC '
-                                  'aborted at [{}]'
+                self.print_thread('Failed to connect to Node ID = {}, thread'
+                                  'might be busy. RPC aborted at [{}]'
                                   .format(n_prime, Chord.print_time()))
                 return None
 

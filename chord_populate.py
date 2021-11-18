@@ -16,9 +16,9 @@ def get_keys_from_csv(csv_file_name):
             print(len(row))
             data[row[0] + row[3]] = list(cell for cell in row if cell != '--'
                                          and cell != '')
-            i += 1
-            if i == 100:
-                break
+            # i += 1
+            # if i == 100:
+            #     break
 
     #return keys
     return data
