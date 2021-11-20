@@ -9,7 +9,7 @@ def main():
 
     address = ('localhost', int(sys.argv[1]))
     key = sys.argv[2]
-    print('Asking Node {} to lookup up data for key = \'{}\''
+    print('Asking Node {} to lookup up data for key = \'{}\' ...\n'
           .format(Chord.lookup_node(address), key))
 
     data_list = Chord.lookup_key(address, key)

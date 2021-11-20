@@ -4,24 +4,26 @@ from chord_node import Chord
 
 
 def get_keys_from_csv(csv_file_name):
-    # keys = []
+    """
+    Process csv file and return a dictionary of keys mapped to data in each
+    row of the csv.
+    :param csv_file_name: name of csv file provided
+    :return: key to data dictionary
+    """
     data = {}
     with open(csv_file_name) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         header_cols = next(csv_reader)
         i = 0
         for row in csv_reader:
-            print('{} {}'.format(row[0], row[3]))
-            # keys.append(row[0] + str(row[3]))
-            print(len(row))
             data[row[0] + row[3]] = list(cell for cell in row if cell != '--'
                                          and cell != '')
-            # i += 1
-            # if i == 100:
-            #     break
+            i += 1
+            if i == 300:
+               break
 
-    #return keys
     return data
+
 
 def main():
     if len(sys.argv) != 3:
@@ -33,16 +35,14 @@ def main():
 
     data = get_keys_from_csv(csv_file)
     address = ('localhost', node_port)
-    print(data)
 
+    print('Asking Node {} to populate data from {} ...\n'
+          .format(Chord.lookup_node(address), csv_file))
     result = Chord.populate(address, data)
-    print(result)
-    print('Thanks Node {}!'.format(Chord.lookup_node(address)))
 
-    # data_added = Chord.populate(address, keys)
-    # for data in data_added:
-    #     print('{} added to Chord network.'.format(data))
-    # print('Thanks Node {}!'.format(Chord.lookup_node(address)))
+    for msg in result:
+        print(msg)
+    print('\nThanks Node {}!'.format(Chord.lookup_node(address)))
 
 
 if __name__ == '__main__':
