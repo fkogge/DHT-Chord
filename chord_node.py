@@ -1,26 +1,41 @@
+"""
+Chord network implementation of a distributed hash table (DHT). The chord
+network is represented as a circle of nodes, each with an M-bit identifier
+(default 160-bits) obtained via hashing of the node's IP address. Hashing is
+done using SHA-1. Uses TCP sockets and multithreading to handle concurrent
+RPC requests.
+
+Extra Credit: update_keys method transfers keys,if necessary, when a new
+              node joins
+
+Author: Francis Kogge
+Date: 11/20/2021
+Course: CPSC 5520
+"""
+
+from threading import Thread, Lock
+from datetime import datetime
+from enum import Enum
 import socket
 import sys
 import pickle
 import hashlib
-from threading import Thread, Lock
-from datetime import datetime
-from enum import Enum
 
 M = hashlib.sha1().digest_size * 8  # M-bit identifier space
-#M = 7
 NODES = 2 ** M  # Node IDs range from (0, 2^M - 1)
 BUF_SZ = 8192  # socket.recv arg
 BACKLOG = 100  # socket.listen arg
 MIN_PORT = 43544
 MAX_PORT = 2 ** 16
 DEFAULT_HOST = 'localhost'
-RPC_TIMEOUT = 3
-TABLE_IDX = M - 25 if M - 25 > 0 else 1  # Finger table entries to print
+RPC_TIMEOUT = 1.5
+TABLE_IDX = M - 25 if M - 25 > 0 else 1  # Last 25 finger table entries or all
 
 
 class ModRange(object):
     """
-    Range-like object that wraps around 0 at some divisor using modulo arithmetic.
+    Range-like object that wraps around 0 at some divisor using modulo
+    arithmetic.
 
     >>> mr = ModRange(1, 4, 100)
     >>> mr
@@ -139,7 +154,7 @@ class FingerEntry(object):
 class RPC(Enum):
     """
     Remote procedure call (RPC) enum class for organizing names of methods that
-    can be invoked on other nodes in the network via an RPC call.
+    can be invoked on other nodes via an RPC call.
     """
     FIND_SUCCESSOR = 'find_successor'
     FIND_PREDECESSOR = 'find_predecessor'
@@ -155,7 +170,8 @@ class RPC(Enum):
 
 class ChordNode(object):
     """
-    A single node in a Chord network.
+    A single node in a Chord network. Each node has a finger table and knows its
+    successor and predecessor nodes.
     """
 
     def __init__(self, port, buddy_port=None):
@@ -172,7 +188,8 @@ class ChordNode(object):
                                 for k in range(1, M + 1)]
         self.predecessor = None
         self.keys = {}
-        self.buddy_node = Chord.lookup_node((DEFAULT_HOST, buddy_port)) if buddy_port else None
+        self.buddy_node = Chord.lookup_node((DEFAULT_HOST, buddy_port)) \
+            if buddy_port else None
         self.lock = Lock()
         self.listener = self.start_listening_server()
         self.joined = False
@@ -279,10 +296,11 @@ class ChordNode(object):
             return self.dispatch_rpc(method_name, arg1, arg2)
 
         bad_port = None
-        for _ in range(MAX_PORT):
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as n_prime_sock:
+        for _ in range(50):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) \
+                    as n_prime_sock:
                 n_prime_address = Chord.lookup_address(n_prime, bad_port)
-                n_prime_sock.settimeout(1.5)
+                n_prime_sock.settimeout(RPC_TIMEOUT)
 
                 try:
                     n_prime_sock.connect(n_prime_address)
@@ -291,10 +309,11 @@ class ChordNode(object):
                     return pickle.loads(n_prime_sock.recv(BUF_SZ))
 
                 except Exception as e:
-                    print('Failed to connect to Node ID = {}, thread '
-                                  'might be busy. RPC aborted at [{}]'
-                                  .format(n_prime, Chord.print_time()))
-                    bad_port = n_prime_address[1]
+                    print('Failed to connect to Node ID = {}, thread might be '
+                          'busy. RPC aborted at [{}]'
+                          .format(n_prime, Chord.print_time()))
+                    if bad_port:
+                        bad_port = n_prime_address[1]
 
     @property
     def successor(self):
@@ -368,7 +387,7 @@ class ChordNode(object):
         ask its buddy node for help setting up its finger table.
         """
         if self.buddy_node is not None:
-            self.init_finger_table(self.buddy_node)
+            self.init_finger_table()
             self.update_others()
             # Tell successor that I'll take over the keys from your old
             # predecessor because that's now my predecessor
@@ -409,9 +428,7 @@ class ChordNode(object):
 
         self.remove_keys(remove_list)
         if self.keys:
-            print('Key bucket: ')
-            for key in self.keys:
-                print(key)
+            print('Keys: {}'.format(self.print_keys()))
 
     def remove_keys(self, remove_list):
         """
@@ -424,14 +441,13 @@ class ChordNode(object):
             del self.keys[key]
         self.lock.release()
 
-
-    def init_finger_table(self, n_prime):
+    def init_finger_table(self):
         """
-        Initializes this node's finger table of successor nodes.
-        :param n_prime: node to ask for help to set up my finger table
+        Initializes this node's finger table of successor nodes with help from
+        the buddy node.
         """
         self.successor = self.call_rpc(self.buddy_node, RPC.FIND_SUCCESSOR,
-                                            self.finger[1].start)
+                                       self.finger[1].start)
 
         self.predecessor = self.call_rpc(self.successor, RPC.GET_PREDECESSOR)
         self.call_rpc(self.successor, RPC.SET_PREDECESSOR, self.node)
@@ -442,7 +458,7 @@ class ChordNode(object):
                 self.finger[i + 1].node = self.finger[i].node
             else:
                 self.finger[i + 1].node = \
-                    self.call_rpc(n_prime, RPC.FIND_SUCCESSOR,
+                    self.call_rpc(self.buddy_node, RPC.FIND_SUCCESSOR,
                                   self.finger[i + 1].start)
 
     def update_others(self):
@@ -469,16 +485,11 @@ class ChordNode(object):
                   .format(s, i, self.node, i, s, s, self.finger[i].start,
                           self.finger[i].node, Chord.print_time()))
             self.finger[i].node = s
-            #print('#', self)
             p = self.predecessor  # get first node preceding myself
             self.call_rpc(p, RPC.UPDATE_FINGER_TABLE, s, i)
-            #print(self.print_finger_table())
-            return str(self)
+            return print(self.print_finger_table())
         else:
-            return 'did nothing {}'.format(self)
-
-    def __repr__(self):
-        return str(self.node)
+            return 'did nothing {}'.format(self.node)
 
     def add_key(self, key, data):
         """
@@ -495,9 +506,9 @@ class ChordNode(object):
 
         if key in ModRange(self.predecessor + 1, self.node + 1, NODES):
             self.keys[key] = data
-            return 'Node {} added key {} at [{}]'.format(self.node,
-                                                         key,
-                                                         Chord.print_time())
+            msg = 'Added key {} at [{}]'.format(key, Chord.print_time())
+            print(msg)
+            return 'Node ID = {} {}'.format(self.node, msg)
         else:
             # If key is not mine, then find the successor who should be
             # responsible and tell them to add it to their bucket
@@ -514,7 +525,8 @@ class ChordNode(object):
             raise ValueError('Error: maximum ID stored is {}'.format(NODES - 1))
 
         if key in ModRange(self.predecessor + 1, self.node + 1, NODES):
-            return self.keys[key]
+            print('Retrieved key {} at [{}]'.format(key, Chord.print_time()))
+            return self.keys[key] if key in self.keys else None
         else:
             # If key is not mine, then find the successor who is responsible
             n_prime = self.find_successor(key)
@@ -523,10 +535,17 @@ class ChordNode(object):
     def print_node_data(self):
         """Printing helper for this node's data."""
         return ''.join(['\n******** Data ********\n',
+                        'node ID: {}\n'.format(self.node),
                         'predecessor: {}\n'.format(self.predecessor),
-                        'sucessor: {}\n'.format(self.successor),
+                        'successor: {}\n'.format(self.successor),
+                        'keys: {}\n'.format(self.print_keys()),
                         '\nFinger table:\n', self.print_finger_table(),
                         '\n**********************\n'])
+
+    def print_keys(self):
+        key_list = list(self.keys.keys())
+        return ', '.join(str(key)
+                         for key in key_list) if self.keys else 'nothing'
 
     def print_finger_table(self):
         """Printing helper for finger table contents."""
@@ -585,8 +604,10 @@ class Chord(object):
                     sock.sendall(marshalled_data)
 
                 except Exception as e:
-                    print('RPC request \'{}\' failed at {}.'
+                    print('RPC request \'{}\' failed at [{}].'
                           .format(method.value, Chord.print_time()))
+                    data_retrieved.append(None)
+                    return data_retrieved
 
                 else:
                     data_retrieved.append(pickle.loads(sock.recv(BUF_SZ)))
@@ -613,10 +634,10 @@ class Chord(object):
         :param key: key to lookup data for
         :return: data mapped to the given key
         """
-        data = Chord.contact_node(address, RPC.GET_DATA, key=key)[0]
-        if data[0] + data[2] not in key:
-            return None
-        return data
+        return Chord.contact_node(address, RPC.GET_DATA, key=key)[0]
+        # if data[0] + data[2] not in key:
+        #     return None
+        # return data
 
     @staticmethod
     def lookup_address(node, bad_port=None):
@@ -636,7 +657,7 @@ class Chord(object):
             del Chord.node_map[node]
 
         if node not in Chord.node_map:
-            for port in range(MIN_PORT, 2**16):
+            for port in range(MIN_PORT, MAX_PORT):
                 # Skip bad port
                 if port in Chord.bad_port_list:
                     continue
@@ -653,6 +674,8 @@ class Chord(object):
                             # If binding fails, node is listening at that port
                             Chord.node_map[node] = address
                             return address
+
+            return None
 
         return Chord.node_map[node]
 
@@ -698,6 +721,10 @@ class Chord(object):
 
 
 def main():
+    """
+    Executes program from the main entry point.
+    """
+    # Expects one additional argument
     if len(sys.argv) != 2:
         print('Usage: chord_node.py NODE_PORT_NUMBER (enter 0 if '
               'starting new network)')
@@ -705,16 +732,16 @@ def main():
 
     known_node_port = int(sys.argv[1])
     new_node_port = Chord.get_empty_port()
-    if not new_node_port:
-        print('Chord network is full - sorry :(')
-        exit(1)
 
     if known_node_port == 0:
+        # Start new network
         new_node = ChordNode(new_node_port)
     else:
+        # Join existing network with a buddy node
         new_node = ChordNode(new_node_port, known_node_port)
 
     new_node.join()
+    new_node.run_server()
 
 
 if __name__ == '__main__':
