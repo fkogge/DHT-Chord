@@ -569,8 +569,7 @@ class Chord(object):
     bad_port_list = []
 
     @staticmethod
-    def contact_node(address: tuple[str, int], method: RPC, key_map=None,
-                     key=None):
+    def contact_node(address, method: RPC, key_map=None, key=None):
         """
         Helper method for either populating data to or retrieving data from the
         node at the given address in the chord network Chord  network.
@@ -615,7 +614,7 @@ class Chord(object):
         return data_retrieved
 
     @staticmethod
-    def populate(address: tuple[str, int], keys: dict):
+    def populate(address, keys: dict):
         """
         Populates the Chord network with the given dictionary keys mapped to
         their data elements.
@@ -626,7 +625,7 @@ class Chord(object):
         return Chord.contact_node(address, RPC.ADD_KEY, key_map=keys)
 
     @staticmethod
-    def lookup_key(address: tuple[str, int], key: str):
+    def lookup_key(address, key: str):
         """
         Asks the Chord node at the given address to lookup the given key, and
         returns the data that the key is mapped to.
@@ -635,9 +634,6 @@ class Chord(object):
         :return: data mapped to the given key
         """
         return Chord.contact_node(address, RPC.GET_DATA, key=key)[0]
-        # if data[0] + data[2] not in key:
-        #     return None
-        # return data
 
     @staticmethod
     def lookup_address(node, bad_port=None):
