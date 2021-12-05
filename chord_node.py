@@ -13,13 +13,13 @@ Date: 11/20/2021
 Course: CPSC 5520
 """
 
-from threading import Thread, Lock
-from datetime import datetime
-from enum import Enum
 import socket
 import sys
 import pickle
 import hashlib
+from threading import Thread, Lock
+from datetime import datetime
+from enum import Enum
 
 M = hashlib.sha1().digest_size * 8  # M-bit identifier space
 NODES = 2 ** M  # Node IDs range from (0, 2^M - 1)
@@ -141,10 +141,7 @@ class FingerEntry(object):
 
     def __repr__(self):
         """ Something like the interval|node charts in the paper """
-        return '{:3} | {:<2} | [{:2}, {:<2}) | {}'.format(self.k, self.start,
-                                                          self.start,
-                                                          self.next_start,
-                                                          self.node)
+        return '{:3} | {:<2} | [{:2}, {:<2}) | {}'.format(self.k, self.start, self.start, self.next_start, self.node)
 
     def __contains__(self, id):
         """ Is the given id within this finger's interval? """
@@ -184,12 +181,10 @@ class ChordNode(object):
         self.address = (DEFAULT_HOST, port)
         self.node = Chord.lookup_node(self.address)
         # 1-based indexing -> 1 <= i <= M
-        self.finger = [None] + [FingerEntry(self.node, k)
-                                for k in range(1, M + 1)]
+        self.finger = [None] + [FingerEntry(self.node, k) for k in range(1, M + 1)]
         self.predecessor = None
         self.keys = {}
-        self.buddy_node = Chord.lookup_node((DEFAULT_HOST, buddy_port)) \
-            if buddy_port else None
+        self.buddy_node = Chord.lookup_node((DEFAULT_HOST, buddy_port)) if buddy_port else None
         self.lock = Lock()
         self.listener = self.start_listening_server()
         self.joined = False
@@ -215,8 +210,7 @@ class ChordNode(object):
             if self.joined:
                 print(self.print_node_data())
 
-            print('\nPort {}: waiting for incoming connection ...\n'
-                  .format(self.address[1]))
+            print('\nPort {}: waiting for incoming connection ...\n'.format(self.address[1]))
             client_sock, client_address = self.listener.accept()
             Thread(target=self.handle_rpc, args=(client_sock,)).start()
 
@@ -228,8 +222,7 @@ class ChordNode(object):
         """
         rpc = client_sock.recv(BUF_SZ)
         method, arg1, arg2 = pickle.loads(rpc)
-        print('Received RPC request: \"{}\" at [{}]'
-              .format(method, Chord.print_time()))
+        print('Received RPC request: \"{}\" at [{}]'.format(method, Chord.print_time()))
         result = self.dispatch_rpc(method, arg1, arg2)
         client_sock.sendall(pickle.dumps(result))
 
@@ -297,8 +290,7 @@ class ChordNode(object):
 
         bad_port = None
         for _ in range(50):
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) \
-                    as n_prime_sock:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as n_prime_sock:
                 n_prime_address = Chord.lookup_address(n_prime, bad_port)
                 n_prime_sock.settimeout(RPC_TIMEOUT)
 
@@ -309,8 +301,7 @@ class ChordNode(object):
                     return pickle.loads(n_prime_sock.recv(BUF_SZ))
 
                 except Exception as e:
-                    print('Failed to connect to Node ID = {}, thread might be '
-                          'busy. RPC aborted at [{}]'
+                    print('Failed to connect to Node ID = {}, thread might be busy. RPC aborted at [{}]'
                           .format(n_prime, Chord.print_time()))
                     if bad_port:
                         bad_port = n_prime_address[1]
@@ -362,9 +353,7 @@ class ChordNode(object):
         :return: predecessor of the ID
         """
         n_prime = self.node
-        while id not in ModRange(n_prime + 1,
-                                 self.call_rpc(n_prime, RPC.SUCCESSOR) + 1,
-                                 NODES):
+        while id not in ModRange(n_prime + 1, self.call_rpc(n_prime, RPC.SUCCESSOR) + 1, NODES):
             n_prime = self.call_rpc(n_prime, RPC.CLOSEST_PRECEDING_FINGER, id)
         return n_prime
 
@@ -399,8 +388,7 @@ class ChordNode(object):
 
         self.joined = True
         print('Joined network at [{}]'.format(Chord.print_time()))
-        print('Initialize finger table complete at [{}]'
-              .format(Chord.print_time()))
+        print('Initialize finger table complete at [{}]'.format(Chord.print_time()))
         print(self.print_node_data())
 
     def update_keys(self):
@@ -422,8 +410,7 @@ class ChordNode(object):
                 remove_list.append(key)
                 n_prime = self.find_successor(key)
                 self.call_rpc(n_prime, RPC.ADD_KEY, key, data)
-                print('Transferred key {} to Node ID = {} at [{}]'
-                      .format(key, n_prime, Chord.print_time()))
+                print('Transferred key {} to Node ID = {} at [{}]'.format(key, n_prime, Chord.print_time()))
         self.lock.release()
 
         self.remove_keys(remove_list)
@@ -446,20 +433,15 @@ class ChordNode(object):
         Initializes this node's finger table of successor nodes with help from
         the buddy node.
         """
-        self.successor = self.call_rpc(self.buddy_node, RPC.FIND_SUCCESSOR,
-                                       self.finger[1].start)
-
+        self.successor = self.call_rpc(self.buddy_node, RPC.FIND_SUCCESSOR, self.finger[1].start)
         self.predecessor = self.call_rpc(self.successor, RPC.GET_PREDECESSOR)
         self.call_rpc(self.successor, RPC.SET_PREDECESSOR, self.node)
 
         for i in range(1, M):
-            if self.finger[i + 1].start in ModRange(self.node,
-                                                    self.finger[i].node, NODES):
+            if self.finger[i + 1].start in ModRange(self.node, self.finger[i].node, NODES):
                 self.finger[i + 1].node = self.finger[i].node
             else:
-                self.finger[i + 1].node = \
-                    self.call_rpc(self.buddy_node, RPC.FIND_SUCCESSOR,
-                                  self.finger[i + 1].start)
+                self.finger[i + 1].node = self.call_rpc(self.buddy_node, RPC.FIND_SUCCESSOR, self.finger[i + 1].start)
 
     def update_others(self):
         """
@@ -468,22 +450,15 @@ class ChordNode(object):
         """
         # find last node p whose i-th finger might be this node
         for i in range(1, M + 1):
-            # FIXME: bug in paper, have to add the 1 +
-            p = self.find_predecessor((1 + self.node - 2 ** (i - 1) + NODES) %
-                                      NODES)
+            p = self.find_predecessor((1 + self.node - 2 ** (i - 1) + NODES) % NODES)
             self.call_rpc(p, RPC.UPDATE_FINGER_TABLE, self.node, i)
 
     def update_finger_table(self, s, i):
         """ If s is i-th finger of n, update this node's finger table with s """
-        # FIXME: don't want e.g. [1, 1) which is the whole circle
-        # FIXME: bug in paper, [.start
         if (self.finger[i].start != self.finger[i].node
-                and s in ModRange(self.finger[i].start,
-                                  self.finger[i].node, NODES)):
-            print('update_finger_table({},{}): {}[{}] = {} since {} in [{},{}) '
-                  'at [{}]'
-                  .format(s, i, self.node, i, s, s, self.finger[i].start,
-                          self.finger[i].node, Chord.print_time()))
+                and s in ModRange(self.finger[i].start, self.finger[i].node, NODES)):
+            print('update_finger_table({},{}): {}[{}] = {} since {} in [{},{}) at [{}]'
+                  .format(s, i, self.node, i, s, s, self.finger[i].start, self.finger[i].node, Chord.print_time()))
             self.finger[i].node = s
             p = self.predecessor  # get first node preceding myself
             self.call_rpc(p, RPC.UPDATE_FINGER_TABLE, s, i)
@@ -501,8 +476,7 @@ class ChordNode(object):
         :return:
         """
         if key >= NODES:
-            raise ValueError('Error: maximum ID allowed is {}'
-                             .format(NODES - 1))
+            raise ValueError('Error: maximum ID allowed is {}'.format(NODES - 1))
 
         if key in ModRange(self.predecessor + 1, self.node + 1, NODES):
             self.keys[key] = data
@@ -544,8 +518,7 @@ class ChordNode(object):
 
     def print_keys(self):
         key_list = list(self.keys.keys())
-        return ', '.join(str(key)
-                         for key in key_list) if self.keys else 'nothing'
+        return ', '.join(str(key) for key in key_list) if self.keys else 'nothing'
 
     def print_finger_table(self):
         """Printing helper for finger table contents."""
@@ -603,8 +576,7 @@ class Chord(object):
                     sock.sendall(marshalled_data)
 
                 except Exception as e:
-                    print('RPC request \'{}\' failed at [{}].'
-                          .format(method.value, Chord.print_time()))
+                    print('RPC request \'{}\' failed at [{}].'.format(method.value, Chord.print_time()))
                     data_retrieved.append(None)
                     return data_retrieved
 
@@ -662,8 +634,7 @@ class Chord(object):
                 generated_node = Chord.lookup_node(address)
 
                 if generated_node == node:
-                    with socket.socket(socket.AF_INET,
-                                       socket.SOCK_STREAM) as sock:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                         try:
                             sock.bind(address)
                         except Exception as e:
