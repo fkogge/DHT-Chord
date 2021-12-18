@@ -1,4 +1,6 @@
 # DHT-Chord
-DHT Chord - Lab 4 for Distributed Systems
+DHT Chord - Distributed Systems
 
-Based on the [original chord paper](https://pdos.csail.mit.edu/papers/chord:sigcomm01/chord_sigcomm.pdf) 
+Implementation of the Chord, peer-to-peer distributed hash table using a 160-bit identifier space. 
+
+Based on the [original chord paper](https://pdos.csail.mit.edu/papers/chord:sigcomm01/chord_sigcomm.pdf).
